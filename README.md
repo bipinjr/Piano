@@ -20,7 +20,8 @@ Features:
    ```
 3. Run the local web server:
    ```bash
-   python server.py
+   python desktop/server.py
    ```
+   (Or serve `web/` with any static server — it's a plain static site, which is how it deploys to Vercel. The original OpenCV/pygame desktop version lives in `desktop/`.)
 4. Open your browser and navigate to `http://localhost:5000`.
 5. Grant camera permissions, and start playing!

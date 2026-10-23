@@ -3,9 +3,9 @@ import os
 
 app = Flask(__name__)
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root
 WEB_DIR = os.path.join(BASE, 'web')
-TUNES_DIR = os.path.join(BASE, 'tunes')
+TUNES_DIR = os.path.join(WEB_DIR, 'tunes')
 
 @app.route('/')
 def index():
