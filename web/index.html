@@ -119,10 +119,18 @@ function ga(f) { if (!ac[f]) ac[f] = new Audio('/tunes/' + f); return ac[f]; }
 ALL_KEYS.forEach(k => ga(k.file)); 
 
 const MAX_HANDS = 2;
+// MCP landmark of index, middle, ring, pinky (thumb curl is too unreliable to play with)
+const FINGER_BASES = [5, 9, 13, 17];
+const MAX_NEW_PER_HAND = 3;   // caps sympathetic curls (ring/pinky move together)
+const KEY_LOCK_MS = 200;      // one key can't re-fire faster than this, from any finger
+const FINGER_LOCK_MS = 150;
+const RELEASE_GAP = 0.08;     // hysteresis: finger must straighten this much past threshold to re-arm
+const newFingers = () => FINGER_BASES.map(() => ({ frames: 0, down: false, lastAt: 0 }));
 const HS = [
-  { smoothLm: null, pressFrames: 0, cooldown: false, activeKey: -1 },
-  { smoothLm: null, pressFrames: 0, cooldown: false, activeKey: -1 }
+  { smoothLm: null, fingers: newFingers() },
+  { smoothLm: null, fingers: newFingers() }
 ];
+const keyLastAt = {};
 const HOV_CLASS = ['hov0', 'hov1'], PRS_CLASS = ['press0', 'press1'];
 const H_COLOR = ['#a855f7', '#06b6d4'];
 
@@ -157,8 +165,8 @@ async function startCamera() {
 }
 
 function d2(a, b) { return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2); }
-function getCurlRatio(lm) {
-  const TIP=lm[8], DIP=lm[7], PIP=lm[6], MCP=lm[5];
+function getCurlRatio(lm, base) {
+  const MCP=lm[base], PIP=lm[base+1], DIP=lm[base+2], TIP=lm[base+3];
   const len = d2(MCP,PIP) + d2(PIP,DIP) + d2(DIP,TIP);
   if (len < 0.001) return 1;
   return d2(TIP, MCP) / len;
@@ -204,14 +212,11 @@ function playNote(keyIdx, handIdx) {
   const k = ALL_KEYS[keyIdx], a = ga(k.file);
   a.currentTime = 0; a.play().catch(() => {});
 
-  const prev = HS[handIdx].activeKey;
-  if (prev >= 0) {
-    const pe = document.getElementById('k' + prev);
-    if (pe) pe.classList.remove(PRS_CLASS[handIdx], HOV_CLASS[handIdx]);
-  }
-  HS[handIdx].activeKey = keyIdx;
   const ke = document.getElementById('k' + keyIdx);
-  if (ke) { ke.classList.remove(HOV_CLASS[handIdx]); ke.classList.add(PRS_CLASS[handIdx]); }
+  if (ke) {
+    ke.classList.add(PRS_CLASS[handIdx]);
+    setTimeout(() => ke.classList.remove(PRS_CLASS[handIdx]), 300);
+  }
 
   totalNotes++;
   document.getElementById('totalNotes').textContent = totalNotes;
@@ -224,23 +229,23 @@ function playNote(keyIdx, handIdx) {
   popTimer = setTimeout(() => p.classList.remove('show'), 600);
 }
 
-function drawHand(screenLm, hi, pressing) {
+function drawHand(screenLm, hi, pressedTips) {
   const col = H_COLOR[hi];
   const CONN = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
   const sw = window.innerWidth, sh = window.innerHeight;
   ctx.save();
-  ctx.strokeStyle = pressing ? '#ef4444' : col;
+  ctx.strokeStyle = col;
   ctx.lineWidth = 3;
   CONN.forEach(([a, b]) => {
     ctx.beginPath(); ctx.moveTo(screenLm[a].x * sw, screenLm[a].y * sh); ctx.lineTo(screenLm[b].x * sw, screenLm[b].y * sh); ctx.stroke();
   });
   screenLm.forEach((l, i) => {
     const x = l.x * sw, y = l.y * sh;
-    const isIdx = (i >= 5 && i <= 8);
-    ctx.beginPath(); ctx.arc(x, y, i === 8 ? 14 : isIdx ? 7 : 5, 0, Math.PI*2);
-    ctx.fillStyle = i === 8 ? (pressing ? '#ef4444' : col) : (isIdx ? col : col+'88');
+    const isTip = FINGER_BASES.includes(i - 3), pressing = pressedTips.includes(i);
+    ctx.beginPath(); ctx.arc(x, y, isTip ? 10 : 5, 0, Math.PI*2);
+    ctx.fillStyle = isTip ? (pressing ? '#ef4444' : col) : col+'88';
     ctx.fill();
-    if (i === 8) {
+    if (pressing) {
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
       ctx.shadowColor = pressing ? '#ef4444' : col; ctx.shadowBlur = 20; ctx.fill(); ctx.shadowBlur = 0;
     }
@@ -271,7 +276,7 @@ function onResults(results) {
     if (!activeIds.includes(hi)) {
       const s = HS[hi];
       if (s.smoothLm) {
-        s.smoothLm = null; s.pressFrames = 0;
+        s.smoothLm = null; s.fingers = newFingers();
         document.querySelectorAll('.white-key, .black-key').forEach(k => k.classList.remove(HOV_CLASS[hi], PRS_CLASS[hi]));
       }
     }
@@ -281,32 +286,33 @@ function onResults(results) {
     const hi = activeIds[i];
     const s = HS[hi], raw = rawHands[i];
     const lm = smoothLandmarks(raw, hi).map(l => ({ x: 1-l.x, y: l.y, z: l.z }));
-    const curlRatio = getCurlRatio(lm);
-    const rawPress = curlRatio < curlThr();
-
-    s.pressFrames = rawPress ? Math.min(s.pressFrames + 1, 4) : Math.max(s.pressFrames - 1, 0);
-    const confirmed = s.pressFrames >= 2;
-
     const screenLm = lm.map(l => getScreenCoords(l.x, l.y));
-    const tip = screenLm[8];
-    const keyIdx = getHoveredKey(tip.x, tip.y);
+    const thr = curlThr(), now = performance.now();
+    const hovered = new Set(), pressedTips = [], fresh = [];
 
-    document.querySelectorAll('.white-key, .black-key').forEach((k) => {
-      if (!s.cooldown) {
-        const isHovered = (k.id === 'k' + keyIdx);
-        k.classList.toggle(HOV_CLASS[hi], isHovered && !confirmed);
-      }
+    FINGER_BASES.forEach((base, fi) => {
+      const f = s.fingers[fi], curl = getCurlRatio(lm, base);
+      f.frames = curl < thr ? Math.min(f.frames + 1, 4) : Math.max(f.frames - 1, 0);
+      if (f.down && f.frames === 0 && curl > thr + RELEASE_GAP) f.down = false;
+
+      const tip = screenLm[base + 3];
+      const keyIdx = getHoveredKey(tip.x, tip.y);
+      if (keyIdx < 0) return;
+      if (f.frames >= 2) pressedTips.push(base + 3); else hovered.add('k' + keyIdx);
+      // Fire only on a fresh press: finger must have re-armed since its last note
+      if (f.frames >= 2 && !f.down && now - f.lastAt > FINGER_LOCK_MS) fresh.push({ f, keyIdx, curl });
     });
 
-    if (confirmed && !s.cooldown && keyIdx >= 0) {
-      s.cooldown = true; s.pressFrames = 0; playNote(keyIdx, hi);
-      setTimeout(() => {
-        s.cooldown = false;
-        document.querySelectorAll('.white-key, .black-key').forEach(k => k.classList.remove(PRS_CLASS[hi], HOV_CLASS[hi]));
-        s.activeKey = -1;
-      }, 400);
-    }
-    drawHand(screenLm, hi, confirmed);
+    // Most-curled fingers win; the rest are consumed silently (neighbours that bent along by accident)
+    fresh.forEach(({ f }) => { f.down = true; f.lastAt = now; });
+    fresh.sort((a, b) => a.curl - b.curl).slice(0, MAX_NEW_PER_HAND).forEach(({ keyIdx }) => {
+      if (now - (keyLastAt[keyIdx] || 0) < KEY_LOCK_MS) return;
+      keyLastAt[keyIdx] = now;
+      playNote(keyIdx, hi);
+    });
+
+    document.querySelectorAll('.white-key, .black-key').forEach(k => k.classList.toggle(HOV_CLASS[hi], hovered.has(k.id)));
+    drawHand(screenLm, hi, pressedTips);
   }
 }
 </script>
