@@ -9,7 +9,7 @@
   <style>
     body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Outfit', sans-serif; color: #fff; }
     #video { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
-    #overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 2; pointer-events: none; }
+    #overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 12; pointer-events: none; }
     
     .header { position: absolute; top: 0; left: 0; width: 100vw; padding: 25px 35px; box-sizing: border-box; display: flex; justify-content: space-between; align-items: flex-start; z-index: 20; pointer-events: none; }
     .header > * { pointer-events: auto; }
@@ -22,9 +22,9 @@
     .stats { display: flex; gap: 20px; font-size: 0.85rem; color: #ccc; }
     .stat-val { font-weight: 800; color: #fff; font-size: 1.1rem; }
     
-    .piano { position: absolute; bottom: 0; left: 0; width: 100vw; height: 35vh; z-index: 10; display: flex; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
+    .piano { position: absolute; bottom: 0; left: 0; width: 100vw; height: 55vh; z-index: 10; display: flex; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
     .white-key { flex: 1; background: rgba(255,255,255,0.85); border: 1px solid #222; border-radius: 0 0 10px 10px; position: relative; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 15px; color: #111; font-weight: 800; font-size: 0.9rem; transition: background 0.1s, box-shadow 0.1s; }
-    .black-key { position: absolute; top: 0; width: 4.6vw; height: 62%; background: rgba(20,20,20,0.95); border: 1.5px solid #000; border-radius: 0 0 8px 8px; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 12px; color: #eee; font-weight: 700; font-size: 0.75rem; transform: translateX(-50%); z-index: 11; box-shadow: 0 6px 15px rgba(0,0,0,0.6); transition: background 0.1s, box-shadow 0.1s; }
+    .black-key { position: absolute; top: 0; width: 4.6vw; height: 72.7%; background: rgba(20,20,20,0.95); border: 1.5px solid #000; border-radius: 0 0 8px 8px; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 12px; color: #eee; font-weight: 700; font-size: 0.75rem; transform: translateX(-50%); z-index: 11; box-shadow: 0 6px 15px rgba(0,0,0,0.6); transition: background 0.1s, box-shadow 0.1s; }
     
     .white-key.hov0 { background: #e9d5ff; }
     .white-key.hov1 { background: #cffafe; }
@@ -120,9 +120,15 @@ const actx = new (window.AudioContext || window.webkitAudioContext)();
 const master = actx.createDynamicsCompressor();
 master.threshold.value = -18; master.ratio.value = 4;
 master.connect(actx.destination);
-const buffers = {};
+const buffers = {}, boost = {};
 ALL_KEYS.forEach(k => fetch('/tunes/' + k.file).then(r => r.arrayBuffer())
-  .then(b => actx.decodeAudioData(b)).then(buf => { buffers[k.file] = buf; }).catch(() => {}));
+  .then(b => actx.decodeAudioData(b)).then(buf => {
+    // The mp3s peak around 0.05 (about -26 dB); normalise each so notes are actually audible
+    let peak = 0;
+    for (let c = 0; c < buf.numberOfChannels; c++) for (const v of buf.getChannelData(c)) peak = Math.max(peak, Math.abs(v));
+    boost[k.file] = peak > 0 ? 0.9 / peak : 1;
+    buffers[k.file] = buf;
+  }).catch(() => {}));
 const MAX_VOICES = 6;
 const voices = [];
 let lastStartAt = 0, chord = [];
@@ -130,6 +136,7 @@ let lastStartAt = 0, chord = [];
 function playBuffer(file) {
   const buf = buffers[file];
   if (!buf) return;
+  if (actx.state !== 'running') actx.resume();
   const t = actx.currentTime;
   // Notes starting together share loudness so a 3-note chord isn't 3x as loud
   if (t - lastStartAt >= 0.05) chord = [];
@@ -137,10 +144,10 @@ function playBuffer(file) {
   const g = actx.createGain();
   const src = actx.createBufferSource();
   src.buffer = buf; src.connect(g); g.connect(master); src.start();
-  const v = { src, g };
+  const v = { src, g, boost: boost[file] };
   voices.push(v);
   chord.push(v);
-  chord.forEach(c => { c.g.gain.value = 0.7 / Math.sqrt(chord.length); });
+  chord.forEach(c => { c.g.gain.value = c.boost / Math.sqrt(chord.length); });
   src.onended = () => { const i = voices.indexOf(v); if (i >= 0) voices.splice(i, 1); };
   while (voices.length > MAX_VOICES) {
     const old = voices.shift();
@@ -232,8 +239,8 @@ function getScreenCoords(lx, ly) {
 }
 
 function getHoveredKey(sx, sy) {
-  // Match the drawn piano: .piano is the bottom 35vh, black keys are 62% of its height
-  const PIANO_TOP = 0.65, BLACK_BOTTOM = PIANO_TOP + 0.35 * 0.62;
+  // Match the drawn piano: .piano is the bottom 55vh (reachable without hands leaving the camera), black keys 72.7% of it
+  const PIANO_TOP = 0.45, BLACK_BOTTOM = PIANO_TOP + 0.55 * 0.727;
   if (sy < PIANO_TOP) return -1;
   const numWhite = 14, wWidth = 1 / numWhite, bWidth = 0.045;
   if (sy < BLACK_BOTTOM) {
