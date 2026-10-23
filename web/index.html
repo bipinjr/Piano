@@ -3,82 +3,128 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pyano - Fullscreen Air Piano</title>
+  <title>Air Piano</title>
+  <meta name="description" content="Play a two-octave piano in the air with your webcam and both hands." />
   <link rel="icon" href="data:," />
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Outfit', sans-serif; color: #fff; }
+    :root {
+      --ivory: #F4EFE3;
+      --ivory-dim: rgba(244, 239, 227, 0.62);
+      --cobalt: #4C7DFF;   /* hand 1 */
+      --brass: #F0B347;    /* hand 2 */
+      --felt: #8E1F2A;     /* the red felt strip above real piano keys */
+      --sage: #7FD69A;
+      --piano-h: 55vh;     /* must match PIANO_TOP in getHoveredKey */
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; background: #000; color: var(--ivory); font-family: 'Familjen Grotesk', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
     #video { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
     #overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 12; pointer-events: none; }
-    
-    .header { position: absolute; top: 0; left: 0; width: 100vw; padding: 25px 35px; box-sizing: border-box; display: flex; justify-content: space-between; align-items: flex-start; z-index: 20; pointer-events: none; }
-    .header > * { pointer-events: auto; }
-    .logo { font-size: 2.2rem; font-weight: 800; text-shadow: 0 4px 15px rgba(0,0,0,0.9); background: linear-gradient(135deg, #a855f7, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    
-    .panel { background: rgba(15,15,25,0.75); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 18px 24px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-    
-    .sens-row { display: flex; align-items: center; gap: 12px; font-size: 0.9rem; font-weight: 600; }
-    .sens-row input { accent-color: #a855f7; }
-    .stats { display: flex; gap: 20px; font-size: 0.85rem; color: #ccc; }
-    .stat-val { font-weight: 800; color: #fff; font-size: 1.1rem; }
-    
-    .piano { position: absolute; bottom: 0; left: 0; width: 100vw; height: 55vh; z-index: 10; display: flex; box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
-    .white-key { flex: 1; background: rgba(255,255,255,0.85); border: 1px solid #222; border-radius: 0 0 10px 10px; position: relative; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 15px; color: #111; font-weight: 800; font-size: 0.9rem; transition: background 0.1s, box-shadow 0.1s; }
-    .black-key { position: absolute; top: 0; width: 4.6vw; height: 72.7%; background: rgba(20,20,20,0.95); border: 1.5px solid #000; border-radius: 0 0 8px 8px; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 12px; color: #eee; font-weight: 700; font-size: 0.75rem; transform: translateX(-50%); z-index: 11; box-shadow: 0 6px 15px rgba(0,0,0,0.6); transition: background 0.1s, box-shadow 0.1s; }
-    
-    .white-key.hov0 { background: #e9d5ff; }
-    .white-key.hov1 { background: #cffafe; }
-    .black-key.hov0 { background: #5b21b6; }
-    .black-key.hov1 { background: #164e63; }
-    
-    .white-key.press0 { background: #a855f7; color: #fff; box-shadow: inset 0 -8px 20px rgba(0,0,0,0.4); }
-    .white-key.press1 { background: #06b6d4; color: #fff; box-shadow: inset 0 -8px 20px rgba(0,0,0,0.4); }
-    .black-key.press0 { background: #a855f7; color: #fff; }
-    .black-key.press1 { background: #06b6d4; color: #fff; }
-    
-    .start-ov { position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; transition: opacity 0.5s; }
+
+    /* Top bar: scrim keeps text readable over any camera image */
+    .bar { position: fixed; top: 0; left: 0; right: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 28px; padding: 18px 28px 40px; background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0)); text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+    .wordmark { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; }
+    .wordmark svg { width: 22px; height: 22px; }
+    .panel { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 26px; font-size: 0.95rem; }
+    .status { display: flex; align-items: center; gap: 8px; color: var(--ivory); }
+    .status::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--brass); flex: none; }
+    .status[data-state="tracking"]::before { background: var(--sage); box-shadow: 0 0 0 4px rgba(127,214,154,0.25); }
+    .status[data-state="idle"]::before { background: var(--ivory-dim); }
+    .status[data-state="error"]::before { background: #FF6B5E; }
+    .count { color: var(--ivory-dim); font-variant-numeric: tabular-nums; }
+    .count b { color: var(--ivory); font-weight: 600; }
+    .sens { display: flex; align-items: center; gap: 10px; color: var(--ivory-dim); }
+    .sens input { width: 120px; accent-color: var(--ivory); }
+    .sens output { color: var(--ivory); font-variant-numeric: tabular-nums; min-width: 2ch; }
+
+    /* Keyboard: see-through glass keys so your fingers stay visible under them */
+    .piano { position: absolute; bottom: 0; left: 0; width: 100vw; height: var(--piano-h); z-index: 10; display: flex; border-top: 4px solid var(--felt); }
+    .white-key { flex: 1; position: relative; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 14px; background: linear-gradient(rgba(244,239,227,0.04), rgba(244,239,227,0.16)); border-right: 1px solid rgba(244,239,227,0.32); border-radius: 0 0 6px 6px; color: var(--ivory); font-size: 0.82rem; font-weight: 500; text-shadow: 0 1px 3px rgba(0,0,0,0.8); transition: background 0.12s, box-shadow 0.12s; }
+    .white-key:last-of-type { border-right: 0; }
+    .black-key { position: absolute; top: 0; width: 4.6vw; height: 72.7%; transform: translateX(-50%); z-index: 11; display: flex; justify-content: center; align-items: flex-end; padding-bottom: 10px; background: rgba(6,6,8,0.62); border: 1px solid rgba(244,239,227,0.18); border-top: 0; border-radius: 0 0 5px 5px; color: var(--ivory-dim); font-size: 0.7rem; font-weight: 500; transition: background 0.12s, box-shadow 0.12s; }
+
+    .white-key.hov0, .black-key.hov0 { box-shadow: inset 0 0 0 2px var(--cobalt); background: rgba(76,125,255,0.16); }
+    .white-key.hov1, .black-key.hov1 { box-shadow: inset 0 0 0 2px var(--brass); background: rgba(240,179,71,0.16); }
+    .white-key.press0, .black-key.press0 { background: rgba(76,125,255,0.62); color: #fff; }
+    .white-key.press1, .black-key.press1 { background: rgba(240,179,71,0.68); color: #1a1205; text-shadow: none; }
+
+    /* Note trails: each note rises from its key in the colour of the hand that played it */
+    .trail { position: fixed; bottom: var(--piano-h); z-index: 11; height: 34vh; transform-origin: bottom; pointer-events: none; border-radius: 4px 4px 0 0; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; font-size: 0.85rem; font-weight: 600; animation: rise 1.3s cubic-bezier(.2,.7,.3,1) forwards; }
+    .trail.h0 { background: linear-gradient(rgba(76,125,255,0), rgba(76,125,255,0.85)); color: #fff; }
+    .trail.h1 { background: linear-gradient(rgba(240,179,71,0), rgba(240,179,71,0.9)); color: #1a1205; }
+    @keyframes rise {
+      0% { transform: scaleY(0.2); opacity: 1; }
+      45% { opacity: 1; }
+      100% { transform: scaleY(1) translateY(-8vh); opacity: 0; }
+    }
+
+    /* Start screen sits over the keyboard so the first thing you see is the instrument */
+    /* Copy fills the space above the keyboard: headline left, instructions right */
+    .start-ov { position: fixed; inset: 0; z-index: 50; background: linear-gradient(rgba(0,0,0,0.94) calc(100% - var(--piano-h)), rgba(0,0,0,0.5)); transition: opacity 0.5s; }
     .start-ov.hidden { opacity: 0; pointer-events: none; }
-    .btn { padding: 16px 45px; font-size: 1.25rem; font-weight: 800; border-radius: 40px; background: linear-gradient(135deg, #a855f7, #06b6d4); color: white; border: none; cursor: pointer; box-shadow: 0 8px 25px rgba(168,85,247,0.5); font-family: 'Outfit', sans-serif; transition: transform 0.2s; }
-    .btn:hover { transform: scale(1.05); }
-    
-    .popup { position: fixed; top: 120px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 2rem; font-weight: 800; padding: 15px 40px; border-radius: 20px; pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 100; box-shadow: 0 10px 40px rgba(0,0,0,0.5); }
-    .popup.h0 { background: linear-gradient(135deg, #7c3aed, #a855f7); }
-    .popup.h1 { background: linear-gradient(135deg, #0891b2, #06b6d4); }
-    .popup.show { opacity: 1; }
+    .start-inner { height: calc(100% - var(--piano-h)); display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: end; gap: 24px clamp(24px, 5vw, 80px); padding: 72px clamp(20px, 6vw, 96px) clamp(24px, 5vh, 48px); }
+    .start-ov h1 { margin: 0; font-size: clamp(2.6rem, 7vw, 6.4rem); line-height: 0.92; font-weight: 700; letter-spacing: -0.04em; }
+    .start-copy { display: flex; flex-direction: column; max-width: 44ch; }
+    .start-ov p { margin: 0 0 22px; font-size: clamp(1rem, 1.3vw, 1.12rem); line-height: 1.5; color: var(--ivory-dim); }
+    .start-ov .fine { margin: 14px 0 0; font-size: 0.86rem; }
+    @media (max-width: 900px), (max-height: 560px) {
+      .start-ov { background: rgba(0,0,0,0.9); }
+      .start-inner { height: 100%; grid-template-columns: 1fr; align-content: center; align-items: start; }
+    }
+    .btn { align-self: flex-start; padding: 15px 30px; font: 600 1.05rem 'Familjen Grotesk', system-ui, sans-serif; color: #120F0A; background: var(--ivory); border: 0; border-radius: 6px; cursor: pointer; transition: background 0.15s; }
+    .btn:hover { background: #fff; }
+    .btn:focus-visible, .sens input:focus-visible { outline: 3px solid var(--brass); outline-offset: 3px; }
+
+    @media (max-width: 700px) {
+      .bar { padding: 14px 16px 32px; }
+      .sens input { width: 90px; }
+      .white-key { font-size: 0.66rem; }
+      .black-key { font-size: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .trail { animation: fade 0.8s forwards; }
+      @keyframes fade { from { opacity: 1; } to { opacity: 0; } }
+      .start-ov { transition: none; }
+    }
   </style>
 </head>
 <body>
-<div class="start-ov" id="startOv">
-  <div style="font-size: 4rem;">🎹</div>
-  <h1 style="font-size: 2.5rem; margin: 0;">Fullscreen Pyano</h1>
-  <p style="color: #aaa; margin-bottom: 20px;">Play the real piano layout in the air with both hands.</p>
-  <button class="btn" onclick="startCamera()">Enable Camera</button>
-</div>
+<section class="start-ov" id="startOv" aria-labelledby="startTitle">
+  <div class="start-inner">
+    <h1 id="startTitle">Play piano<br />in the air.</h1>
+    <div class="start-copy">
+      <p>Hold your hands up to the camera, point a finger at a key and bend it to play. Both hands work, with up to three notes at once on each.</p>
+      <button class="btn" id="startBtn" onclick="startCamera()">Turn on camera</button>
+      <p class="fine">Works best in good light with your whole hand in view. The video stays on your device.</p>
+    </div>
+  </div>
+</section>
 
-<video id="video" autoplay playsinline></video>
+<video id="video" autoplay playsinline muted></video>
 <canvas id="overlay"></canvas>
 
-<header class="header">
-  <div class="logo">🎹 Pyano</div>
+<header class="bar">
+  <div class="wordmark">
+    <svg viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="3" width="20" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 3v16M14 3v16" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="3" width="4" height="9" rx="1" fill="currentColor"/><rect x="12" y="3" width="4" height="9" rx="1" fill="currentColor"/></svg>
+    Air Piano
+  </div>
   <div class="panel" id="panel" style="display:none">
-    <div class="sens-row">
-      <span>🎛️ Sensitivity</span>
-      <input type="range" id="sensSlider" min="20" max="90" value="55" oninput="SENS=parseInt(this.value); document.getElementById('sVal').innerText=this.value;" />
-      <span id="sVal">55</span>
-    </div>
-    <div class="stats">
-      <div>Notes: <span class="stat-val" id="totalNotes">0</span></div>
-      <div>Hands: <span class="stat-val" id="hCount">0</span></div>
-    </div>
+    <div class="status" id="status" data-state="loading" role="status">Loading hand tracking…</div>
+    <div class="count"><b id="hCount">0</b> <span id="hWord">hands</span>, <b id="totalNotes">0</b> notes</div>
+    <label class="sens">Press sensitivity
+      <input type="range" id="sensSlider" min="20" max="90" value="55" oninput="SENS=parseInt(this.value); document.getElementById('sVal').value=this.value;" />
+      <output id="sVal">55</output>
+    </label>
   </div>
 </header>
 
-<div class="popup" id="popup"></div>
 <div class="piano" id="piano"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 <script>
 const WHITE_KEYS = [
   {note:'C3', file:'c3.mp3'}, {note:'D3', file:'d3.mp3'}, {note:'E3', file:'e3.mp3'}, {note:'F3', file:'f3.mp3'},
@@ -114,7 +160,6 @@ BLACK_KEYS.forEach(k => {
 
 let SENS = 55;
 let totalNotes = 0;
-let popTimer = null;
 // Web Audio: compressor glues chords instead of clipping; voice cap stops long smears
 const actx = new (window.AudioContext || window.webkitAudioContext)();
 const master = actx.createDynamicsCompressor();
@@ -171,7 +216,7 @@ const HS = [
 ];
 const keyLastAt = {};
 const HOV_CLASS = ['hov0', 'hov1'], PRS_CLASS = ['press0', 'press1'];
-const H_COLOR = ['#a855f7', '#06b6d4'];
+const H_COLOR = ['#4C7DFF', '#F0B347']; // cobalt / brass, same as the CSS tokens
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('overlay');
@@ -188,20 +233,29 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 
+function setStatus(text, state) {
+  const el = document.getElementById('status');
+  if (el.textContent !== text) { el.textContent = text; el.dataset.state = state; }
+}
+
+// Start the ~10 MB model download on page load, not on click, so tracking is ready sooner
+const hands = new Hands({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f });
+hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+hands.onResults(r => onResults(r));
+const handsReady = hands.initialize().catch(e => setStatus('Hand tracking failed to load. Check your connection and reload.', 'error'));
+
 async function startCamera() {
   actx.resume(); // browsers only allow audio after a user click
   document.getElementById('startOv').classList.add('hidden');
   document.getElementById('panel').style.display = 'flex';
-
-  const hands = new Hands({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/' + f });
-  hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.55, minTrackingConfidence: 0.55 });
-  hands.onResults(onResults);
+  resize();
 
   const cam = new Camera(video, {
-    onFrame: async () => { resize(); await hands.send({ image: video }); },
+    // send() before the preload finishes starts a second init, which crashes MediaPipe's wasm FS (ErrnoError)
+    onFrame: async () => { await handsReady; await hands.send({ image: video }); },
     width: 800, height: 600
   });
-  cam.start();
+  cam.start().catch(e => setStatus('Camera is blocked. Allow camera access in your browser, then reload.', 'error'));
 }
 
 // 3D distance in square units: x and z are width-normalised, y is height-normalised
@@ -267,12 +321,15 @@ function playNote(keyIdx, handIdx) {
   totalNotes++;
   document.getElementById('totalNotes').textContent = totalNotes;
 
-  const p = document.getElementById('popup');
-  p.className = 'popup h' + handIdx;
-  p.textContent = '🎵 ' + k.note;
-  p.classList.add('show');
-  clearTimeout(popTimer);
-  popTimer = setTimeout(() => p.classList.remove('show'), 600);
+  if (ke) {
+    const r = ke.getBoundingClientRect(), tr = document.createElement('div');
+    tr.className = 'trail h' + handIdx;
+    tr.textContent = k.note;
+    tr.style.left = (r.left + r.width * 0.15) + 'px';
+    tr.style.width = (r.width * 0.7) + 'px';
+    tr.addEventListener('animationend', () => tr.remove());
+    document.body.appendChild(tr);
+  }
 }
 
 function drawHand(screenLm, hi, pressedTips) {
@@ -289,15 +346,13 @@ function drawHand(screenLm, hi, pressedTips) {
     const x = l.x * sw, y = l.y * sh;
     const isTip = FINGER_BASES.includes(i - 3), pressing = pressedTips.includes(i);
     ctx.beginPath(); ctx.arc(x, y, isTip ? 10 : 5, 0, Math.PI*2);
-    ctx.fillStyle = isTip ? (pressing ? '#ef4444' : col) : col+'88';
+    ctx.fillStyle = isTip ? (pressing ? '#F4EFE3' : col) : col+'88';
     ctx.fill();
     if (pressing) {
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-      ctx.shadowColor = pressing ? '#ef4444' : col; ctx.shadowBlur = 20; ctx.fill(); ctx.shadowBlur = 0;
+      ctx.shadowColor = pressing ? '#F4EFE3' : col; ctx.shadowBlur = 20; ctx.fill(); ctx.shadowBlur = 0;
     }
   });
-  ctx.font = 'bold 16px Outfit,sans-serif'; ctx.fillStyle = col; ctx.shadowColor = '#000'; ctx.shadowBlur = 5;
-  ctx.fillText('H' + (hi+1), screenLm[0].x * sw - 10, screenLm[0].y * sh - 20);
   ctx.restore();
 }
 
@@ -307,6 +362,9 @@ function onResults(results) {
   const rawHands = results.multiHandLandmarks || [];
   const handedness = results.multiHandedness || [];
   document.getElementById('hCount').textContent = rawHands.length;
+  document.getElementById('hWord').textContent = rawHands.length === 1 ? 'hand' : 'hands';
+  if (rawHands.length) setStatus('Tracking. Bend a finger over a key to play', 'tracking');
+  else setStatus('Show your whole hand to the camera', 'idle');
 
   // Persist hand identity across frames using MediaPipe's handedness label
   const activeIds = [];
