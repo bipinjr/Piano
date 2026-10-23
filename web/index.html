@@ -239,23 +239,44 @@ function setStatus(text, state) {
 }
 
 // Start the ~10 MB model download on page load, not on click, so tracking is ready sooner
-const hands = new Hands({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f });
-hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-hands.onResults(r => onResults(r));
-const handsReady = hands.initialize().catch(e => setStatus('Hand tracking failed to load. Check your connection and reload.', 'error'));
+let hands = null, handsReady = Promise.resolve(), lastResultAt = 0, trackError = '';
+if (window.Hands) {
+  hands = new Hands({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/' + f });
+  hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+  hands.onResults(r => { lastResultAt = performance.now(); onResults(r); });
+  handsReady = hands.initialize().catch(e => { trackError = 'Hand tracking failed to load (' + (e && e.message || e) + '). Check your connection and reload.'; });
+}
 
 async function startCamera() {
   actx.resume(); // browsers only allow audio after a user click
   document.getElementById('startOv').classList.add('hidden');
   document.getElementById('panel').style.display = 'flex';
   resize();
+  if (!hands) {
+    setStatus('Hand tracking script was blocked from cdn.jsdelivr.net. Disable ad or script blockers for this site and reload.', 'error');
+    return;
+  }
+  setStatus('Loading hand tracking…', 'loading');
 
   const cam = new Camera(video, {
     // send() before the preload finishes starts a second init, which crashes MediaPipe's wasm FS (ErrnoError)
-    onFrame: async () => { await handsReady; await hands.send({ image: video }); },
+    onFrame: async () => {
+      await handsReady;
+      if (trackError) return setStatus(trackError, 'error');
+      // A throw here used to stop the camera loop silently; show it and keep trying on the next frame
+      try { await hands.send({ image: video }); }
+      catch (e) { setStatus('Hand tracking error: ' + (e && e.message || e) + '. Try reloading, or another browser.', 'error'); }
+    },
     width: 800, height: 600
   });
-  cam.start().catch(e => setStatus('Camera is blocked. Allow camera access in your browser, then reload.', 'error'));
+  cam.start().catch(e => setStatus('Camera is blocked (' + e.name + '). Allow camera access in your browser, then reload.', 'error'));
+
+  // Watchdog: say what's going on instead of loading forever
+  setTimeout(() => {
+    if (lastResultAt || trackError) return;
+    if (!video.videoWidth) setStatus('No camera picture yet. Check the camera permission and that no other app is using it.', 'error');
+    else setStatus('Hand tracking is still loading. A slow connection or a blocked cdn.jsdelivr.net can cause this.', 'loading');
+  }, 20000);
 }
 
 // 3D distance in square units: x and z are width-normalised, y is height-normalised
