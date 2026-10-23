@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pyano - Fullscreen Air Piano</title>
+  <link rel="icon" href="data:," />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet" />
   <style>
     body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Outfit', sans-serif; color: #fff; }
@@ -114,9 +115,39 @@ BLACK_KEYS.forEach(k => {
 let SENS = 55;
 let totalNotes = 0;
 let popTimer = null;
-const ac = {};
-function ga(f) { if (!ac[f]) ac[f] = new Audio('/tunes/' + f); return ac[f]; }
-ALL_KEYS.forEach(k => ga(k.file)); 
+// Web Audio: compressor glues chords instead of clipping; voice cap stops long smears
+const actx = new (window.AudioContext || window.webkitAudioContext)();
+const master = actx.createDynamicsCompressor();
+master.threshold.value = -18; master.ratio.value = 4;
+master.connect(actx.destination);
+const buffers = {};
+ALL_KEYS.forEach(k => fetch('/tunes/' + k.file).then(r => r.arrayBuffer())
+  .then(b => actx.decodeAudioData(b)).then(buf => { buffers[k.file] = buf; }).catch(() => {}));
+const MAX_VOICES = 6;
+const voices = [];
+let lastStartAt = 0, chord = [];
+
+function playBuffer(file) {
+  const buf = buffers[file];
+  if (!buf) return;
+  const t = actx.currentTime;
+  // Notes starting together share loudness so a 3-note chord isn't 3x as loud
+  if (t - lastStartAt >= 0.05) chord = [];
+  lastStartAt = t;
+  const g = actx.createGain();
+  const src = actx.createBufferSource();
+  src.buffer = buf; src.connect(g); g.connect(master); src.start();
+  const v = { src, g };
+  voices.push(v);
+  chord.push(v);
+  chord.forEach(c => { c.g.gain.value = 0.7 / Math.sqrt(chord.length); });
+  src.onended = () => { const i = voices.indexOf(v); if (i >= 0) voices.splice(i, 1); };
+  while (voices.length > MAX_VOICES) {
+    const old = voices.shift();
+    old.g.gain.setTargetAtTime(0, t, 0.03);
+    old.src.stop(t + 0.15);
+  }
+}
 
 const MAX_HANDS = 2;
 // MCP landmark of index, middle, ring, pinky (thumb curl is too unreliable to play with)
@@ -125,7 +156,8 @@ const MAX_NEW_PER_HAND = 3;   // caps sympathetic curls (ring/pinky move togethe
 const KEY_LOCK_MS = 200;      // one key can't re-fire faster than this, from any finger
 const FINGER_LOCK_MS = 150;
 const RELEASE_GAP = 0.08;     // hysteresis: finger must straighten this much past threshold to re-arm
-const newFingers = () => FINGER_BASES.map(() => ({ frames: 0, down: false, lastAt: 0 }));
+const AIM_FRAMES = 4;         // ~130ms of aim history at 30fps
+const newFingers = () => FINGER_BASES.map(() => ({ frames: 0, down: false, lastAt: 0, aim: [] }));
 const HS = [
   { smoothLm: null, fingers: newFingers() },
   { smoothLm: null, fingers: newFingers() }
@@ -150,6 +182,7 @@ function resize() {
 window.addEventListener('resize', resize);
 
 async function startCamera() {
+  actx.resume(); // browsers only allow audio after a user click
   document.getElementById('startOv').classList.add('hidden');
   document.getElementById('panel').style.display = 'flex';
 
@@ -164,12 +197,16 @@ async function startCamera() {
   cam.start();
 }
 
-function d2(a, b) { return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2); }
+// 3D distance in square units: x and z are width-normalised, y is height-normalised
+function d3(a, b) {
+  const ar = videoW && videoH ? videoW / videoH : 1;
+  return Math.sqrt(((a.x-b.x)*ar)**2 + (a.y-b.y)**2 + ((a.z-b.z)*ar)**2);
+}
 function getCurlRatio(lm, base) {
   const MCP=lm[base], PIP=lm[base+1], DIP=lm[base+2], TIP=lm[base+3];
-  const len = d2(MCP,PIP) + d2(PIP,DIP) + d2(DIP,TIP);
+  const len = d3(MCP,PIP) + d3(PIP,DIP) + d3(DIP,TIP);
   if (len < 0.001) return 1;
-  return d2(TIP, MCP) / len;
+  return d3(TIP, MCP) / len;
 }
 function curlThr() { return 0.85 - (SENS - 20) * (0.40 / 70); }
 
@@ -195,9 +232,11 @@ function getScreenCoords(lx, ly) {
 }
 
 function getHoveredKey(sx, sy) {
-  if (sy < 0.45) return -1;
+  // Match the drawn piano: .piano is the bottom 35vh, black keys are 62% of its height
+  const PIANO_TOP = 0.65, BLACK_BOTTOM = PIANO_TOP + 0.35 * 0.62;
+  if (sy < PIANO_TOP) return -1;
   const numWhite = 14, wWidth = 1 / numWhite, bWidth = 0.045;
-  if (sy < 0.85) {
+  if (sy < BLACK_BOTTOM) {
     for (let k of BLACK_KEYS) {
       const center = k.b * wWidth;
       if (sx > center - bWidth/2 && sx < center + bWidth/2) return k.idx;
@@ -209,8 +248,8 @@ function getHoveredKey(sx, sy) {
 }
 
 function playNote(keyIdx, handIdx) {
-  const k = ALL_KEYS[keyIdx], a = ga(k.file);
-  a.currentTime = 0; a.play().catch(() => {});
+  const k = ALL_KEYS[keyIdx];
+  playBuffer(k.file);
 
   const ke = document.getElementById('k' + keyIdx);
   if (ke) {
@@ -296,7 +335,10 @@ function onResults(results) {
       if (f.down && f.frames === 0 && curl > thr + RELEASE_GAP) f.down = false;
 
       const tip = screenLm[base + 3];
-      const keyIdx = getHoveredKey(tip.x, tip.y);
+      const tipKey = getHoveredKey(tip.x, tip.y);
+      // A curling tip slides back toward the palm; play the key it pointed at a few frames before the press
+      if (f.frames === 0) { f.aim.push(tipKey); if (f.aim.length > AIM_FRAMES) f.aim.shift(); }
+      const keyIdx = f.aim.length && f.aim[0] >= 0 ? f.aim[0] : tipKey;
       if (keyIdx < 0) return;
       if (f.frames >= 2) pressedTips.push(base + 3); else hovered.add('k' + keyIdx);
       // Fire only on a fresh press: finger must have re-armed since its last note
